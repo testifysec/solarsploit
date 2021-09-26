@@ -1,5 +1,7 @@
 package main
 
+import "C"
+
 import (
 	"fmt"
 	"os"
@@ -61,28 +63,55 @@ func exploit(pid int) {
 		if exit {
 			err = syscall.PtraceGetRegs(pid, &regs)
 			if err != nil {
-				fmt.Printf("here: %s\n", err.Error())
 				break
 			}
 
 			// Uncomment to show each syscall as it's called
 			name, _ := sec.ScmpSyscall(regs.Orig_rax).GetName()
-			fmt.Printf("Name: %s\n", name)
+			if name == "openat" {
+				fmt.Printf("Name: %s\n", name)
+
+				path, err := getOpenAtPath(pid, regs)
+				if err != nil {
+					fmt.Println(err)
+				}
+				fmt.Printf("Path: %s", path)
+
+			}
+
 		}
 
 		err = syscall.PtraceSyscall(pid, 0)
 		if err != nil {
 			fmt.Printf(err.Error())
-			panic(err)
+			break
 		}
 
 		_, err = syscall.Wait4(pid, nil, 0, nil)
 		if err != nil {
 			fmt.Printf(err.Error())
-			panic(err)
+			break
 		}
 
 		exit = !exit
 	}
 
+}
+
+func getOpenAtPath(pid int, regs syscall.PtraceRegs) (string, error) {
+	path, err := readString(pid, uintptr(regs.Rsi))
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func readString(pid int, addr uintptr) (string, error) {
+	data := make([]byte, 4096)
+	bytes_copied, _ := syscall.PtracePeekData(pid, addr, data)
+	if bytes_copied == 0 {
+		return "", fmt.Errorf("0-byte string returned")
+	}
+	str := C.GoString((*C.char)(C.CBytes(data)))
+	return str, nil
 }
