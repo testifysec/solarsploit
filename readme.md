@@ -1,4 +1,4 @@
-# SoloarSploit
+# SolarSploit
 
 Sample malicious program that emulates the SolarWinds attack vector.
 
