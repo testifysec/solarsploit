@@ -15,8 +15,6 @@ import (
 	sec "github.com/seccomp/libseccomp-golang"
 )
 
-type syscallCounter []int
-
 func main() {
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -40,7 +38,6 @@ func findproc() {
 		exec := proc.Executable()
 
 		if exec == "go" {
-
 			eh, _ := os.FindProcess(proc.Pid())
 			exploit(eh.Pid)
 
@@ -64,19 +61,7 @@ func exploit(pid int) {
 
 			// Uncomment to show each syscall as it's called
 			name, _ := sec.ScmpSyscall(regs.Orig_rax).GetName()
-
-			if name == "close" {
-				closepath, err := getOpenAtPath(pid, regs)
-				if err != nil {
-					fmt.Println(err)
-				}
-
-				if strings.Contains(closepath, "main.go") {
-					fmt.Printf("Close")
-					fmt.Printf("Path: %s\n", closepath)
-					fmt.Printf("Name: %s\n", name)
-				}
-			}
+			fmt.Println(name)
 
 			if name == "openat" {
 
@@ -168,3 +153,8 @@ func readString(pid int, addr uintptr) (string, error) {
 	str := C.GoString((*C.char)(C.CBytes(data)))
 	return str, nil
 }
+
+func init() {
+	fmt.Println("Your code is hacked")
+}
+	
