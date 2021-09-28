@@ -12,7 +12,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/davecgh/go-spew/spew"
 	ps "github.com/mitchellh/go-ps"
 	sec "github.com/seccomp/libseccomp-golang"
 )
@@ -28,6 +27,7 @@ type target struct {
 	cleanSource []byte
 	path        string
 	proc        os.Process
+	isPatched   bool
 }
 
 type syscallTask struct {
@@ -69,6 +69,9 @@ func (t *target) patch() error {
 }
 
 func (t *target) clean() error {
+	if !t.isPatched {
+		return nil
+	}
 	log.Printf("Cleaning %s", t.path)
 	f, err := os.OpenFile(t.path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
@@ -91,6 +94,7 @@ func (t *target) clean() error {
 }
 
 func (t *target) trace() error {
+	t.isPatched = false
 	runtime.LockOSThread()
 	var regs syscall.PtraceRegs
 	//wait Waiting state
@@ -156,11 +160,14 @@ func (t *target) trace() error {
 				t.path = path
 				fmt.Printf("Path: %s\n", t.path)
 				fmt.Printf("Name: %s\n", name)
-				err = t.patch()
+				if !t.isPatched {
+					err = t.patch()
+				}
 				if err != nil {
 					log.Printf("Error patching file, %v", err)
 					return err
 				}
+				t.isPatched = true
 
 			}
 		}
@@ -248,7 +255,6 @@ func main() {
 					}
 
 					pids = append(pids, proc.Pid())
-					spew.Dump(pids)
 					log.Printf("New Active Target PID: %d", proc.Pid())
 					targets <- newTarget
 
