@@ -35,15 +35,6 @@ type syscallTask struct {
 	Name string
 }
 
-//x86_64 The system call name corresponding to the system call number on the
-var sTask = []syscallTask{
-	{0, "read"},
-	{1, "write"},
-	{2, "open"},
-	{3, "close"},
-	{4, "stat"},
-}
-
 func (t *target) detach() error {
 	err := syscall.PtraceDetach(t.pid)
 	if err != nil {
