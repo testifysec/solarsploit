@@ -30,6 +30,6 @@ func init() {
 Set the IMA policy to `tcb`
 ```GRUB_CMDLINE_LINUX="ima_policy=tcb ima_hash=sha256 ima=on"```
 
-Inspect the IMA log and compare the SHASUM has of the input files to the value in the logs.  Verify the log by calculating the aggrigate of all of the IMA checksums to the value in PCR rgister 10 of the TPM device, they should match. 
+Inspect the IMA log and compare the SHASUM hash of the input files to the value in the logs.  Verify the log by calculating the aggrigate of all of the IMA checksums to the value in PCR rgister 10 of the TPM device, they should match. 
 
 ![Screenshot from 2021-09-28 23-18-24](https://user-images.githubusercontent.com/6634325/135206145-da183619-2911-48a5-a458-4f7fa3756a56.png)
